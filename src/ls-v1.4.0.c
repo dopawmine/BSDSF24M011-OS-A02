@@ -29,7 +29,8 @@ typedef enum {
 } display_mode_t;
 
 void do_ls(const char *dir, display_mode_t mode);
-void do_ls_long(const char *dir);
+void do_ls_long(const char *dir, char **names, size_t count);
+int  compare_names(const void *a, const void *b);
 void print_vertical(char **names, size_t count, size_t maxlen);
 void print_horizontal(char **names, size_t count, size_t maxlen);
 int  get_terminal_width(void);
@@ -133,12 +134,17 @@ void do_ls(const char *dir, display_mode_t mode)
     if (errno != 0)
         perror("readdir failed");
 
+    /* ---------- Sort before any display function is called ---------- */
+    if (count > 1)
+        qsort(names, count, sizeof(char *), compare_names);
+
     /* ---------- Task 4: choose display function based on the flag ---------- */
     switch (mode)
     {
         case MODE_LONG:
-            do_ls_long(dir);                          /* does its own lstat pass */
-            break;
+            if (count > 0)
+                do_ls_long(dir, names, count);
+        break;
         case MODE_HORIZONTAL:
             if (count > 0)
                 print_horizontal(names, count, maxlen);
@@ -155,6 +161,15 @@ void do_ls(const char *dir, display_mode_t mode)
         free(names[i]);
     free(names);
     closedir(dp);
+}
+
+/* qsort passes pointers to the array ELEMENTS, and each element is a char *,
+ *  so a and b are really char ** (pointers to string pointers). */
+int compare_names(const void *a, const void *b)
+{
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+    return strcmp(s1, s2);
 }
 
 /* Down then across (your v1.2.0 logic, moved into its own function) */
@@ -271,39 +286,25 @@ void get_group_name(gid_t gid, char *buf, size_t size)
 }
 
 /* Long listing: pass 1 finds column widths, pass 2 prints aligned rows */
-void do_ls_long(const char *dir)
+/* Long listing over the already-sorted array: pass 1 = column widths, pass 2 = print */
+void do_ls_long(const char *dir, char **names, size_t count)
 {
-    struct dirent *entry;
     struct stat st;
     char path[PATH_MAX];
-    char owner[64], group[64];
-    char perms[11];
-
-    DIR *dp = opendir(dir);
-    if (dp == NULL)
-    {
-        fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
-    }
-
+    char owner[64], group[64], perms[11], tmp[64];
     int w_links = 0, w_owner = 0, w_group = 0, w_size = 0;
     long long total_blocks = 0;
-    char tmp[64];
 
     /* ---------- Pass 1: compute column widths ---------- */
-    while ((entry = readdir(dp)) != NULL)
+    for (size_t i = 0; i < count; i++)
     {
-        if (entry->d_name[0] == '.')
-            continue;
-
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
         if (lstat(path, &st) == -1)
             continue;
 
         total_blocks += st.st_blocks;
 
-        int len;
-        len = snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)st.st_nlink);
+        int len = snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)st.st_nlink);
         if (len > w_links) w_links = len;
 
         get_user_name(st.st_uid, owner, sizeof(owner));
@@ -318,16 +319,12 @@ void do_ls_long(const char *dir)
         if (len > w_size) w_size = len;
     }
 
-    printf("total %lld\n", total_blocks / 2);   /* st_blocks are 512-byte units; ls shows 1K */
+    printf("total %lld\n", total_blocks / 2);
 
-    /* ---------- Pass 2: print ---------- */
-    rewinddir(dp);
-    while ((entry = readdir(dp)) != NULL)
+    /* ---------- Pass 2: print in sorted order ---------- */
+    for (size_t i = 0; i < count; i++)
     {
-        if (entry->d_name[0] == '.')
-            continue;
-
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
         if (lstat(path, &st) == -1)
         {
             perror(path);
@@ -338,7 +335,6 @@ void do_ls_long(const char *dir)
         get_user_name(st.st_uid, owner, sizeof(owner));
         get_group_name(st.st_gid, group, sizeof(group));
 
-        /* ctime() returns "Wed Jun 30 21:49:08 1993\n"; chars 4..15 = "Jun 30 21:49" */
         time_t mtime = st.st_mtime;
         char *timestr = ctime(&mtime);
         char timebuf[13];
@@ -352,9 +348,8 @@ void do_ls_long(const char *dir)
                w_group, group,
                w_size, (long long)st.st_size,
                timebuf,
-               entry->d_name);
+               names[i]);
 
-        /* Show symlink target like real ls */
         if (S_ISLNK(st.st_mode))
         {
             char target[PATH_MAX];
@@ -367,9 +362,4 @@ void do_ls_long(const char *dir)
         }
         printf("\n");
     }
-
-    if (errno != 0)
-        perror("readdir failed");
-
-    closedir(dp);
 }

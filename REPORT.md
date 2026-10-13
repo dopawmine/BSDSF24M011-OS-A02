@@ -75,3 +75,44 @@ I used an enum, `display_mode_t`, with three values: `MODE_DEFAULT`, `MODE_LONG`
 - `MODE_DEFAULT` calls `print_vertical()`
 
 A single enum variable with a `switch` keeps the decision in one place, avoids conflicting flags, and makes it easy to add new display modes later by adding one enum value and one `case`.
+
+
+
+
+
+
+
+
+### Q1: Why must all directory entries be read into memory before sorting? What are the drawbacks for directories with millions of files?
+
+`readdir()` returns entries in whatever order the filesystem stores them, not alphabetical order, and it hands them out one at a time. The program cannot know where an entry belongs in the sorted order until it has seen every other entry. For example, the very last entry read could be alphabetically first. Sorting therefore needs the complete list in memory, so all names are read into a dynamically allocated array and sorted with `qsort()` before anything is displayed.
+
+For directories with millions of files this approach has drawbacks:
+
+- **High memory usage:** every filename is copied with `strdup()`, and the pointer array also takes space. A million names of about 20 bytes each is tens of megabytes, plus the allocator's overhead per string.
+- **Delayed output:** nothing is printed until the whole directory has been read and sorted, so the user waits with no feedback. An unsorted `ls` could start printing immediately.
+- **Sorting cost:** `qsort()` takes O(n log n) comparisons, which becomes noticeable for millions of entries.
+- **Allocation failure:** if memory runs out, `realloc()` or `strdup()` fails and the program cannot list the directory at all.
+
+### Q2: Explain the purpose and signature of the comparison function required by `qsort()`. How does it work, and why must it take `const void *` arguments?
+
+`qsort()` is a generic function that can sort an array of any type, but it does not know how to compare elements of that type. The comparison function tells it how to order two elements. Its signature is:
+
+```c
+int compare_names(const void *a, const void *b);
+```
+
+`qsort()` calls it with pointers to two **elements of the array**. Since each element of our array is a `char *` (a string pointer), each argument is really a pointer to a string pointer, i.e. a `char **`. The function casts and dereferences them to get the strings, then compares them with `strcmp()`:
+
+```c
+int compare_names(const void *a, const void *b)
+{
+    const char *s1 = *(const char **)a;
+    const char *s2 = *(const char **)b;
+    return strcmp(s1, s2);
+}
+```
+
+The return value tells `qsort()` the order: negative if the first element should come before the second, zero if they are equal, and positive if the first should come after the second.
+
+The arguments are `const void *` because `qsort()` is type-independent. A `void *` can point to any type, so the same `qsort()` works for ints, structs or strings, and the comparison function casts the pointers back to the real type. The `const` promises that the comparison will not modify the elements being compared. `strcmp` cannot be passed directly, because it expects `const char *` arguments, while `qsort()` supplies `char **` pointers, so it would compare the pointer bytes instead of the strings.
