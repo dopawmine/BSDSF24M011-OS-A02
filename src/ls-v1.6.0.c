@@ -30,6 +30,7 @@
 #define COLOR_REVERSE  "\033[7m"      /* special files */
 
 static int use_color = 1;             /* set in main(): off when output is piped */
+static int recursive_flag = 0;        /* set by -R */
 
 typedef enum {
     MODE_DEFAULT,      /* down then across (v1.2.0) */
@@ -56,7 +57,7 @@ int main(int argc, char *argv[])
     display_mode_t mode = MODE_DEFAULT;
     use_color = isatty(STDOUT_FILENO);   /* no escape codes when piped or redirected */
 
-    while ((opt = getopt(argc, argv, "lx")) != -1)
+    while ((opt = getopt(argc, argv, "lxR")) != -1)
     {
         switch (opt)
         {
@@ -66,8 +67,11 @@ int main(int argc, char *argv[])
             case 'x':
                 mode = MODE_HORIZONTAL;
                 break;
+            case 'R':
+                recursive_flag = 1;
+                break;
             default:
-                fprintf(stderr, "Usage: %s [-l | -x] [directory...]\n", argv[0]);
+                fprintf(stderr, "Usage: %s [-l | -x] [-R] [directory...]\n", argv[0]);
                 return 1;
         }
     }
@@ -80,9 +84,11 @@ int main(int argc, char *argv[])
     {
         for (int i = optind; i < argc; i++)
         {
-            printf("Directory listing of %s : \n", argv[i]);
+            if (!recursive_flag)
+                printf("Directory listing of %s : \n", argv[i]);
             do_ls(argv[i], mode);
-            puts("");
+            if (i + 1 < argc)
+                puts("");
         }
     }
     return 0;
@@ -101,6 +107,7 @@ int get_terminal_width(void)
 
 /* Default listing: columns, "down then across" */
 /* Reads all names into a dynamic array, then dispatches on the display mode */
+/* Reads names, sorts, displays, then (with -R) recurses into subdirectories */
 void do_ls(const char *dir, display_mode_t mode)
 {
     DIR *dp = opendir(dir);
@@ -110,7 +117,10 @@ void do_ls(const char *dir, display_mode_t mode)
         return;
     }
 
-    char **names = NULL;
+    if (recursive_flag)
+        printf("%s:\n", dir);                    /* Task 3: print directory name first */
+
+        char **names = NULL;
     size_t count = 0, capacity = 0, maxlen = 0;
     struct dirent *entry;
 
@@ -147,11 +157,13 @@ void do_ls(const char *dir, display_mode_t mode)
     if (errno != 0)
         perror("readdir failed");
 
-    /* ---------- Sort before any display function is called ---------- */
+    /* Close now: a deep recursion would otherwise keep one DIR open per level */
+    closedir(dp);
+    dp = NULL;
+
     if (count > 1)
         qsort(names, count, sizeof(char *), compare_names);
 
-    /* ---------- Task 4: choose display function based on the flag ---------- */
     switch (mode)
     {
         case MODE_LONG:
@@ -169,11 +181,35 @@ void do_ls(const char *dir, display_mode_t mode)
         break;
     }
 
+    /* ---------- Recursion (-R) ---------- */
+    if (recursive_flag)
+    {
+        for (size_t i = 0; i < count; i++)
+        {
+            if (strcmp(names[i], ".") == 0 || strcmp(names[i], "..") == 0)
+                continue;
+
+            char path[PATH_MAX];
+            struct stat st;
+            snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+
+            if (lstat(path, &st) == -1)
+                continue;
+
+            if (S_ISDIR(st.st_mode))
+            {
+                printf("\n");                    /* blank line between sections */
+                do_ls(path, mode);               /* recursive call with full path */
+            }
+        }
+    }
+
     cleanup:
     for (size_t i = 0; i < count; i++)
         free(names[i]);
     free(names);
-    closedir(dp);
+    if (dp != NULL)
+        closedir(dp);
 }
 
 /* qsort passes pointers to the array ELEMENTS, and each element is a char *,

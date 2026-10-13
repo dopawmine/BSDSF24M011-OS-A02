@@ -116,3 +116,38 @@ int compare_names(const void *a, const void *b)
 The return value tells `qsort()` the order: negative if the first element should come before the second, zero if they are equal, and positive if the first should come after the second.
 
 The arguments are `const void *` because `qsort()` is type-independent. A `void *` can point to any type, so the same `qsort()` works for ints, structs or strings, and the comparison function casts the pointers back to the real type. The `const` promises that the comparison will not modify the elements being compared. `strcmp` cannot be passed directly, because it expects `const char *` arguments, while `qsort()` supplies `char **` pointers, so it would compare the pointer bytes instead of the strings.
+
+
+
+
+
+
+
+
+
+
+### Q1: What is a "base case" in a recursive function? What is the base case that stops the recursive `ls` from continuing forever?
+
+A base case is the condition under which a recursive function stops calling itself and simply returns. Every recursive function needs one, and every recursive call must move closer to it. Without a base case the function would call itself forever until the stack overflows.
+
+In my recursive `ls`, the base case is a directory that contains **no subdirectories**. In `do_ls()`, after displaying the entries, the program loops over the sorted names and makes a recursive call only if an entry is a directory (`lstat()` plus `S_ISDIR()`). If no entry passes that check, no recursive call is made and the function returns to its caller. Each recursive call also goes one level deeper into the tree, and a directory tree is finite, so the recursion must eventually reach directories with no subdirectories.
+
+Two further checks keep the recursion from looping forever:
+
+- `.` and `..` are skipped explicitly. `.` is the directory itself and `..` is its parent, so recursing into them would never end.
+- `lstat()` is used instead of `stat()`, so a symbolic link to a directory is not treated as a directory and is not followed. This avoids infinite loops caused by links that point back to a parent directory.
+
+(A directory that cannot be opened is a second stopping point: `opendir()` fails, an error is printed, and the function returns immediately.)
+
+### Q2: Why must a full path be constructed before the recursive call? What would happen if `do_ls("subdir")` were called from within `do_ls("parent_dir")`?
+
+`readdir()` returns only the **name** of each entry (e.g. `subdir`), not its path. System calls such as `opendir()` and `lstat()` resolve a relative name against the program's **current working directory**, which never changes while `ls` runs. The program is not "inside" `parent_dir`, so a bare name is not looked up there.
+
+The full path is built with `snprintf(path, sizeof(path), "%s/%s", dir, name)`, giving `parent_dir/subdir`. This path is correct from the current working directory and is used both for `lstat()` (to check `S_ISDIR`) and as the argument of the recursive call. It also grows at each level (`proj`, `proj/src`, `proj/src/util`), so every call knows exactly where it is.
+
+If the program called `do_ls("subdir")` instead:
+
+- `opendir("subdir")` would look for `subdir` in the current working directory, not inside `parent_dir`. It would most likely fail with "Cannot open directory", so the subdirectory would never be listed.
+- If a directory with the same name happened to exist in the current directory, the program would list the **wrong** directory.
+- The `lstat()` check would fail or test the wrong file for the same reason.
+- The printed headings (`subdir:` instead of `parent_dir/subdir:`) would not show where the listing is located, and two different subdirectories with the same name would be indistinguishable.
