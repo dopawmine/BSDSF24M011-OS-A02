@@ -21,6 +21,15 @@
 #include <sys/ioctl.h>
 
 #define SPACING 2
+/* ANSI escape codes */
+#define COLOR_RESET    "\033[0m"
+#define COLOR_BLUE     "\033[0;34m"   /* directory */
+#define COLOR_GREEN    "\033[0;32m"   /* executable */
+#define COLOR_RED      "\033[0;31m"   /* tarballs */
+#define COLOR_PINK     "\033[0;35m"   /* symbolic links */
+#define COLOR_REVERSE  "\033[7m"      /* special files */
+
+static int use_color = 1;             /* set in main(): off when output is piped */
 
 typedef enum {
     MODE_DEFAULT,      /* down then across (v1.2.0) */
@@ -31,8 +40,11 @@ typedef enum {
 void do_ls(const char *dir, display_mode_t mode);
 void do_ls_long(const char *dir, char **names, size_t count);
 int  compare_names(const void *a, const void *b);
-void print_vertical(char **names, size_t count, size_t maxlen);
-void print_horizontal(char **names, size_t count, size_t maxlen);
+void print_vertical(const char *dir, char **names, size_t count, size_t maxlen);
+void print_horizontal(const char *dir, char **names, size_t count, size_t maxlen);
+void print_colored(const char *name, mode_t mode);
+void print_entry(const char *dir, const char *name, int pad);
+int  has_extension(const char *name, const char *ext);
 int  get_terminal_width(void);
 void mode_to_string(mode_t mode, char *str);
 void get_user_name(uid_t uid, char *buf, size_t size);
@@ -42,6 +54,7 @@ int main(int argc, char *argv[])
 {
     int opt;
     display_mode_t mode = MODE_DEFAULT;
+    use_color = isatty(STDOUT_FILENO);   /* no escape codes when piped or redirected */
 
     while ((opt = getopt(argc, argv, "lx")) != -1)
     {
@@ -147,12 +160,12 @@ void do_ls(const char *dir, display_mode_t mode)
         break;
         case MODE_HORIZONTAL:
             if (count > 0)
-                print_horizontal(names, count, maxlen);
+                print_horizontal(dir, names, count, maxlen);
         break;
         case MODE_DEFAULT:
         default:
             if (count > 0)
-                print_vertical(names, count, maxlen);
+                print_vertical(dir, names, count, maxlen);
         break;
     }
 
@@ -173,7 +186,7 @@ int compare_names(const void *a, const void *b)
 }
 
 /* Down then across (your v1.2.0 logic, moved into its own function) */
-void print_vertical(char **names, size_t count, size_t maxlen)
+void print_vertical(const char *dir, char **names, size_t count, size_t maxlen)
 {
     int term_width = get_terminal_width();
     int col_width  = (int)maxlen + SPACING;
@@ -191,21 +204,21 @@ void print_vertical(char **names, size_t count, size_t maxlen)
                 break;
 
             size_t next = (size_t)(c + 1) * rows + r;
+            int pad = 0;
             if (c + 1 < cols && next < count)
-                printf("%-*s", col_width, names[idx]);
-            else
-                printf("%s", names[idx]);
+                pad = col_width - (int)strlen(names[idx]);
+
+            print_entry(dir, names[idx], pad);
         }
         printf("\n");
     }
 }
 
-/* Horizontal (-x): fill left to right, wrap when the next item won't fit */
-void print_horizontal(char **names, size_t count, size_t maxlen)
+void print_horizontal(const char *dir, char **names, size_t count, size_t maxlen)
 {
     int term_width = get_terminal_width();
     int col_width  = (int)maxlen + SPACING;
-    int pos = 0;                                  /* current horizontal position */
+    int pos = 0;
 
     for (size_t i = 0; i < count; i++)
     {
@@ -215,12 +228,12 @@ void print_horizontal(char **names, size_t count, size_t maxlen)
             pos = 0;
         }
 
+        int pad = 0;
         if (i + 1 < count)
-            printf("%-*s", col_width, names[i]);  /* pad to column width */
-            else {
-                printf("%s", names[i]);               /* last item: no padding */
-            }
-            pos += col_width;
+            pad = col_width - (int)strlen(names[i]);
+
+        print_entry(dir, names[i], pad);
+        pos += col_width;
     }
     printf("\n");
 }
@@ -341,14 +354,14 @@ void do_ls_long(const char *dir, char **names, size_t count)
         strncpy(timebuf, timestr + 4, 12);
         timebuf[12] = '\0';
 
-        printf("%s %*lu %-*s %-*s %*lld %s %s",
+        printf("%s %*lu %-*s %-*s %*lld %s ",
                perms,
                w_links, (unsigned long)st.st_nlink,
                w_owner, owner,
                w_group, group,
                w_size, (long long)st.st_size,
-               timebuf,
-               names[i]);
+               timebuf);
+        print_colored(names[i], st.st_mode);
 
         if (S_ISLNK(st.st_mode))
         {
@@ -362,4 +375,50 @@ void do_ls_long(const char *dir, char **names, size_t count)
         }
         printf("\n");
     }
+}
+
+/* 1 if name ends with ext (e.g. ".tar") */
+int has_extension(const char *name, const char *ext)
+{
+    size_t n = strlen(name), e = strlen(ext);
+    return n > e && strcmp(name + n - e, ext) == 0;
+}
+
+/* Task 4: print a filename in the color that matches its st_mode */
+void print_colored(const char *name, mode_t mode)
+{
+    const char *color = NULL;
+
+    if (S_ISLNK(mode))
+        color = COLOR_PINK;
+    else if (S_ISDIR(mode))
+        color = COLOR_BLUE;
+    else if (S_ISCHR(mode) || S_ISBLK(mode) || S_ISFIFO(mode) || S_ISSOCK(mode))
+        color = COLOR_REVERSE;
+    else if (has_extension(name, ".tar") || has_extension(name, ".gz") ||
+        has_extension(name, ".zip"))
+        color = COLOR_RED;
+    else if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))
+        color = COLOR_GREEN;
+
+    if (use_color && color != NULL)
+        printf("%s%s%s", color, name, COLOR_RESET);
+    else
+        printf("%s", name);
+}
+
+/* Task 3: lstat the file, print it colored, then add `pad` spaces */
+void print_entry(const char *dir, const char *name, int pad)
+{
+    char path[PATH_MAX];
+    struct stat st;
+
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (lstat(path, &st) == -1)
+        printf("%s", name);                  /* can't stat: print plain */
+        else
+            print_colored(name, st.st_mode);
+
+    for (int i = 0; i < pad; i++)
+        putchar(' ');
 }
