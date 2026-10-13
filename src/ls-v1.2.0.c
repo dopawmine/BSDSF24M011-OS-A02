@@ -18,12 +18,14 @@
 #include <grp.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 
 void do_ls(const char *dir);
 void do_ls_long(const char *dir);
 void mode_to_string(mode_t mode, char *str);
 void get_user_name(uid_t uid, char *buf, size_t size);
 void get_group_name(gid_t gid, char *buf, size_t size);
+int get_terminal_width(void);
 
 int main(int argc, char *argv[])
 {
@@ -68,25 +70,99 @@ int main(int argc, char *argv[])
 }
 
 /* Original simple listing (unchanged logic from v1.0.0) */
+#define SPACING 2
+
+/* Terminal width via ioctl(TIOCGWSZ); falls back to 80 if unavailable (e.g. output piped) */
+int get_terminal_width(void)
+{
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0)
+        return 80;
+    return ws.ws_col;
+}
+
+/* Default listing: columns, "down then across" */
 void do_ls(const char *dir)
 {
-    struct dirent *entry;
     DIR *dp = opendir(dir);
     if (dp == NULL)
     {
         fprintf(stderr, "Cannot open directory : %s\n", dir);
         return;
     }
+
+    char **names = NULL;          /* dynamic array of strings */
+    size_t count = 0, capacity = 0;
+    size_t maxlen = 0;            /* longest filename */
+    struct dirent *entry;
+
+    /* ---------- Task 2: read all names, track longest ---------- */
     errno = 0;
     while ((entry = readdir(dp)) != NULL)
     {
         if (entry->d_name[0] == '.')
             continue;
-        printf("%s\n", entry->d_name);
+
+        if (count == capacity)    /* grow array when full */
+        {
+            capacity = (capacity == 0) ? 64 : capacity * 2;
+            char **tmp = realloc(names, capacity * sizeof(char *));
+            if (tmp == NULL)
+            {
+                perror("realloc");
+                goto cleanup;
+            }
+            names = tmp;
+        }
+
+        names[count] = strdup(entry->d_name);
+        if (names[count] == NULL)
+        {
+            perror("strdup");
+            goto cleanup;
+        }
+
+        size_t len = strlen(names[count]);
+        if (len > maxlen)
+            maxlen = len;
+        count++;
     }
     if (errno != 0)
         perror("readdir failed");
 
+    if (count == 0)
+        goto cleanup;
+
+    /* ---------- Task 3: column layout ---------- */
+    int term_width = get_terminal_width();
+    int col_width  = (int)maxlen + SPACING;
+    int cols = term_width / col_width;
+    if (cols < 1)
+        cols = 1;
+    int rows = (int)((count + cols - 1) / cols);   /* ceiling division */
+
+    /* ---------- Task 4: print down then across ---------- */
+    for (int r = 0; r < rows; r++)
+    {
+        for (int c = 0; c < cols; c++)
+        {
+            size_t idx = (size_t)c * rows + r;
+            if (idx >= count)
+                break;
+
+            size_t next = (size_t)(c + 1) * rows + r;
+            if (c + 1 < cols && next < count)
+                printf("%-*s", col_width, names[idx]);   /* pad to align next column */
+                else
+                    printf("%s", names[idx]);                /* last item in row: no padding */
+        }
+        printf("\n");
+    }
+
+    cleanup:
+    for (size_t i = 0; i < count; i++)
+        free(names[i]);
+    free(names);
     closedir(dp);
 }
 
