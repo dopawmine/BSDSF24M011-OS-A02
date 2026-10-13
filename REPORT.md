@@ -47,3 +47,31 @@ If the program used only a fixed width of 80 columns:
 - It would not adapt when the user **resizes** the terminal.
 
 The fixed 80 is only suitable as a fallback, for example when output is piped or redirected to a file and `ioctl` fails because stdout is not a terminal.
+
+
+
+### Q1: Compare the implementation complexity of "down then across" (vertical) and "across" (horizontal) printing. Which requires more pre-calculation, and why?
+
+The vertical ("down then across") logic is more complex and needs more pre-calculation. Before printing anything, it must compute:
+
+- `col_width = maxlen + spacing`
+- `cols = terminal_width / col_width`
+- `rows = ceil(total_files / cols)`
+
+The number of rows must be known first because it decides where each column starts in the array. Each item is then found with index math, `filenames[c * rows + r]`, and the code must also check for an incomplete last column (`idx >= count`) and avoid padding the last item in a row. The printing is done with nested loops that jump through the array by `rows` positions.
+
+The horizontal ("across") logic is simpler. It only needs `col_width`, and then walks the array in its normal order (0, 1, 2, ...). A running `pos` counter tracks the horizontal cursor, and when `pos + col_width` would exceed the terminal width, it prints a newline and resets `pos` to 0. It does not need to compute the number of rows or columns up front, and it has no index math or incomplete-column case, because the filenames are already in the order they are printed.
+
+Both need all filenames read into an array first, so the longest name is known, but only the vertical mode needs the row/column calculation.
+
+### Q2: Describe the strategy used to manage the different display modes (`-l`, `-x`, default). How did the program decide which function to call?
+
+I used an enum, `display_mode_t`, with three values: `MODE_DEFAULT`, `MODE_LONG` and `MODE_HORIZONTAL`. In `main()`, `getopt(argc, argv, "lx")` parses the options and sets a single `mode` variable: `-l` sets `MODE_LONG` and `-x` sets `MODE_HORIZONTAL`. If no option is given, the mode stays `MODE_DEFAULT`. If both options are given, the last one wins, as in the real `ls`.
+
+`main()` passes `mode` to `do_ls(dir, mode)`. This function reads all the filenames into a dynamically allocated array and tracks the longest name. It then uses a `switch (mode)` to choose the printing function:
+
+- `MODE_LONG` calls `do_ls_long()`
+- `MODE_HORIZONTAL` calls `print_horizontal()`
+- `MODE_DEFAULT` calls `print_vertical()`
+
+A single enum variable with a `switch` keeps the decision in one place, avoids conflicting flags, and makes it easy to add new display modes later by adding one enum value and one `case`.
